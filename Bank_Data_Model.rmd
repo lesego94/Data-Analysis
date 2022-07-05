@@ -1,0 +1,261 @@
+---
+title: 'Bank + Marketing Data '
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(tidyverse)
+library(caret)
+library(leaps)
+library(dplyr)
+library(ggplot2)
+library(ROSE)
+```
+
+```{r}
+dataset = read.csv('insurance2.csv')
+```
+
+I choose to remove Group, Seq nr, day, month, job,contact, pOutcome,duration, previous.
+
+```{r}
+df = subset(dataset, select = -c(Group,Seq.nr,job,contact,day,month,duration,poutcome,pdays))
+```
+
+We need to encode the categorical data.
+
+```{r}
+df$marital = factor(df$marital,
+                    levels = c('married','single','divorced'),
+                    labels = c(1,2,3))
+
+df$marital = as.numeric(as.character(df$marital))
+
+df$education = factor(df$education,
+                      level = c('tertiary','secondary','primary','unknown'),
+                      labels = c(1,2,3,4))
+
+df$education = as.numeric(as.character(df$education))
+
+df$default = factor(df$default,
+                    levels = c('yes','no'),
+                    labels = c(1,0))
+
+df$default = as.numeric(as.character(df$default))
+
+df$housing = factor(df$housing,
+                    levels = c('yes','no'),
+                    labels = c(1,0))
+
+df$housing = as.numeric(as.character(df$housing))
+
+df$loan = factor(df$loan,
+                    levels = c('yes','no'),
+                    labels = c(1,0))
+
+df$loan = as.numeric(as.character(df$loan))
+
+df$y = factor(df$y,
+                 levels = c('yes','no'),
+                 labels = c(1,0))
+
+#df$y = as.numeric(as.character(df$y))
+```
+
+We see that the target variable y is very imbalanced. The number of "yes" classification is far fewer than that of "No". That is very unbalanced. Lets determine the fraction of "Yes" In the data set. We need to do some resampling of the training data.
+
+```{r}
+df2 <- as.numeric(as.character(df$y))
+
+barplot(prop.table(table(df$y)),
+        col = rainbow(2),
+        ylim = c(0, 1),
+        main = "Class Distribution")
+
+```
+
+```{r}
+require(dplyr)
+df2 <- as.numeric(as.character(df$y))
+table(df2)
+
+```
+
+There are number of sampling techniques we can use to balance the data such as over-sampling, under-sampling, both have their own disadvantages. OverSampling can lead to repeated obsevation. Undersampling is deprived of information from the original data, which leads to innacuracies. the ROSE package can generate data synthetically and is considered to provide better estimates of the data and will be used here.
+
+```{r}
+library(ROSE)
+table(df$y)
+prop.table(table(df$y))
+```
+
+As we see, this data set contains only 11% of positive cases and 89% of negative cases. This is a severely imbalanced data set.
+
+Let's build a model on this data. I'll be using decision tree algorithm for modeling purpose.
+
+Data is split first.
+
+```{r}
+library(caTools)
+set.seed(123)
+split = sample.split(df$y, SplitRatio = 0.90)
+training_set = subset(df, split == TRUE)
+test_set = subset(df, split == FALSE)
+```
+
+Feature scaling
+
+```{r}
+training_set[-10] = scale(training_set[-10])
+test_set[-10] = scale(test_set[-10])
+```
+
+Create a model
+
+```{r}
+library(rpart)
+treeimb <- rpart(y ~ ., data = training_set)
+pred.treeimb <- predict(treeimb, newdata = test_set)
+```
+
+Let's check the accuracy of this prediction. To check accuracy, ROSE package has a function names *accuracy.meas*, it computes important metrics such as precision, recall & F measure
+
+```{r}
+accuracy.meas(test_set$y, pred.treeimb[,2])
+```
+
+These metrics provide an interesting interpretation. With threshold value as 0.5, Precision = 0.71 says there are some false positives. Recall = 0.526 is very much high and indicates that we have no number of false negatives. Threshold values can be altered also. F = 469 is also low and suggests weak accuracy of this model.
+
+```{r}
+roc.curve(test_set$y, pred.treeimb[,2], plotit = F)
+
+```
+
+AUC = 0.68 is a terribly low score. Therefore, it is necessary to balanced data before applying a machine learning algorithm. In this case, the algorithm gets biased toward the majority class and fails to map minority class.
+
+The data generated from oversampling have expected amount of repeated observations. Data generated from undersampling is deprived of important information from the original data. This leads to inaccuracies in the resulting performance. To encounter these issues, ROSE helps us to generate data synthetically as well. The data generated using ROSE is considered to provide better estimate of original data.
+
+```{r}
+data.rose <- ROSE(y~ ., data = training_set, seed = 1)$data
+table(data.rose$y)
+```
+
+```{r}
+head(data.rose)
+
+```
+
+```{r}
+library(caTools)
+set.seed(123)
+split = sample.split(data.rose$y, SplitRatio = 0.90)
+training_set = subset(data.rose, split == TRUE)
+test_set = subset(data.rose, split == FALSE)
+```
+
+Check Correlation, Use Pearson Correlation. We may want to remove some variables if they are strongly correlated.
+
+```{r}
+library("Hmisc")
+res3 <- rcorr(as.matrix(training_set[-11]))
+res3
+
+library(corrplot)
+corrplot(res3$r, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+
+```
+
+The variables we have are not strong correlated to one another
+
+Fitting Logistic Regression to the Training set
+
+```{r}
+mod1 <- glm(formula = y ~ .,
+                 family  = binomial,
+                 data = training_set)
+summary(mod1)
+```
+
+We need to do variable selection.
+
+```{r}
+library(MASS)
+mod_set <- stepAIC(mod1, direction = 'backward', trace = FALSE)
+mod_set
+```
+
+```{r}
+library(bootStepAIC)
+mod_boot <- boot.stepAIC(mod1, training_set, B=50)
+mod_boot
+```
+
+Using stepAIC bootstrap, we arrive at the final model shown.
+
+```{r}
+mod2 <- glm(formula = y ~ marital + education + default + balance + housing + loan + 
+    campaign + previous,
+                 family  = binomial(link="logit"),
+                 data = training_set)
+summary(mod2)
+```
+
+Return exponentiated coefficients to get the odds ratio.
+
+```{r}
+OR <- data.frame(exp(mod2$coefficients))
+OR_Perc <- (OR-1)*100
+OR_Perc
+```
+
+Use model to make some predictions
+
+```{r}
+predict(mod2,training_set, type = "response")
+glm_probs = data.frame(probs = predict(mod2, 
+                                       newdata = training_set, 
+                                       type="response"))
+```
+
+```{r}
+glm_pred = glm_probs %>%
+  mutate(pred = ifelse(probs>.5, "0", "1"))
+
+
+glm_pred = cbind(training_set, glm_pred)
+
+
+```
+
+```{r}
+probabilities <- mod2 %>% predict(training_set, type = "response")
+predicted.classes <- ifelse(probabilities> 0.5, 0, 1)
+# Model Accuracy
+mean(predicted.classes == training_set$y)
+```
+
+```{r}
+hist(glm_probs)
+```
+
+The default cutoff prediction probability score is 0.5 or the ratio of 1's and 0's in the training data. But sometimes, tuning the probability cutoff can improve the accuracy in both the development and validation samples. The `InformationValue::optimalCutoff` function provides ways to find the optimal cutoff to improve the prediction of 1's, 0's, both 1's and 0's and o reduce the misclassification error. Lets compute the optimal score that minimizes the misclassification error for the above model.
+
+```{r}
+library(InformationValue)
+optCutOff <- optimalCutoff(glm_pred$y, glm_probs)[1] 
+optCutOff
+```
+
+```{r}
+
+library(caret)
+CM <- confusionMatrix(glm_pred$y, predict(mod2,training_set, type = "response"))
+CM
+```
+
+```{r}
+accuracy.meas(glm_pred$y, glm_pred$pred)
+```
